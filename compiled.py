@@ -50,177 +50,238 @@ def generate_applicant_data(
     return data
 
 
-@njit(cache=True)
+@njit(cache=True, fastmath=True, parallel=True)
+def generate_noise(
+    noise_distribution: Literal["normal", "uniform"], size: int
+) -> npt.NDArray[np.float64]:
+    if noise_distribution == "normal":
+        return np.random.normal(0, 1, size)
+    elif noise_distribution == "uniform":
+        return np.random.uniform(-1, 1, size)
+
+    raise ValueError('Invalid noise distribution type. Choose "normal" or "uniform".')
+
+
+@njit(cache=True, fastmath=True, parallel=True)
 def simulated_measurements(
     data: npt.NDArray[np.float64],
-    noised_correlation: float,
+    noise_multiplier: float,
     noise_distribution: Literal["normal", "uniform"],
 ) -> npt.NDArray[np.float64]:
-    MAX_ITER = 100_000
-    tolerance = 1e-3  # Convergence tolerance
-    noise_multiplier_upper = 1
-    noise_multiplier_lower = 0.0
-    noise_multiplier = 0.0
-    current_noised_correlation = 0.0
+    noise = generate_noise(noise_distribution, data.size)
+    return data + noise_multiplier * noise
 
-    # Expand data. This is to avoid overfitting the noise to the data.
-    repeats = 100_000 // data.size
+
+@njit(cache=True, fastmath=True, parallel=True)
+def extend_data(
+    data: npt.NDArray[np.float64],
+) -> npt.NDArray[np.float64]:
+    MAX_EXTEND = 1_000_000
+
+    if data.size > MAX_EXTEND:
+        raise ValueError(
+            "Data size cannot be larger than the maximum extended data size."
+        )
+
+    repeats = MAX_EXTEND // data.size
     extended_size = data.size * repeats
-    extended_data = np.zeros(extended_size, dtype=np.float64)
-    for i in range(repeats):
-        extended_data[i * data.size : (i + 1) * data.size] = data
+    extended_data = np.zeros(extended_size)
+
+    for i in range(data.size):
+        extended_data[i * repeats : (i + 1) * repeats] = data[i]
+
+    return extended_data
+
+
+# super hot
+@njit(cache=True, fastmath=True, parallel=True)
+def get_proper_noise_level(
+    data: npt.NDArray[np.float64],
+    desired_correlation: float,
+    noise_distribution: Literal["normal", "uniform"],
+) -> float:
+    if desired_correlation > 1 or desired_correlation < 0:
+        raise ValueError("Desired correlation must be between 0 and 1.")
+
+    MAX_ITER = 100_000
+    TOLERANCE = 1e-2  # Convergence tolerance
+    noise_multiplier_upper = 4.0
+    noise_multiplier_lower = 0.0
 
     # Generate noise
-    if noise_distribution == "normal":
-        noise = np.random.normal(0, 1, extended_data.size)
-    elif noise_distribution == "uniform":
-        noise = np.random.uniform(-1, 1, extended_data.size)
-    else:
-        raise ValueError(
-            'Invalid noise distribution type. Choose "normal" or "uniform".'
-        )
+    noise = generate_noise(noise_distribution, data.size)
 
     # Initialize the minimum maximum
     for _ in range(MAX_ITER):
-        noised_data = extended_data + noise_multiplier_upper * noise
-        current_noised_correlation = np.corrcoef(extended_data, noised_data)[0, 1]
-
-        if current_noised_correlation < noised_correlation:
+        noised_data = data + noise_multiplier_upper * noise
+        current_noised_correlation = np.corrcoef(data, noised_data)[0, 1]
+        if current_noised_correlation <= desired_correlation:
             break
 
         noise_multiplier_lower = noise_multiplier_upper
-        noise_multiplier_upper *= 2
+        noise_multiplier_upper = noise_multiplier_upper * 2
 
     # Binary search for the noise multiplier
     for _ in range(MAX_ITER):
         noise_multiplier = (noise_multiplier_lower + noise_multiplier_upper) / 2
-        noised_data = extended_data + noise_multiplier * noise
-        current_noised_correlation = np.corrcoef(extended_data, noised_data)[0, 1]
+        noised_data = data + noise_multiplier * noise
+        current_noised_correlation = np.corrcoef(data, noised_data)[0, 1]
+        difference = (
+            abs(current_noised_correlation - desired_correlation) / desired_correlation
+        )
+        if difference <= TOLERANCE:
+            return noise_multiplier
 
-        if abs(current_noised_correlation - noised_correlation) <= tolerance:
-            return noised_data[: data.size]
-
-        if current_noised_correlation < noised_correlation:
+        if desired_correlation > current_noised_correlation:
             noise_multiplier_upper = noise_multiplier
         else:
             noise_multiplier_lower = noise_multiplier
 
-    # Debugging output
-    print(
-        data.size,
-        noise_multiplier_lower,
-        noise_multiplier_upper,
-        noise_multiplier,
-        current_noised_correlation,
-        noised_correlation,
-    )
     raise ValueError(
         "Could not find the desired noise level within the specified iterations."
     )
 
 
-@njit(cache=True)
+@njit(cache=True, fastmath=True, parallel=True)
+def find_best_scores(
+    applicant_data: npt.NDArray[np.float64],
+    selection_size: int,
+) -> npt.NDArray[np.int64]:
+    """Returns the indices of the best applicants."""
+    # best_indices
+    best_indices = np.zeros(selection_size, dtype=np.int64) - 1
+    worst_value = -np.inf
+    worst_index = -1
+
+    for i in range(applicant_data.size):
+        # if the current score is better than the worst score
+        if applicant_data[i] > worst_value:
+            # insert the current score at the worst index
+            best_indices[worst_index] = i
+
+            # update the worst value and index
+            worst_value = np.inf
+            for j in range(selection_size):
+                index = best_indices[j]
+                if index == -1:
+                    worst_value = -np.inf
+                    worst_index = j
+                    break
+
+                if applicant_data[index] < worst_value:
+                    worst_value = applicant_data[index]
+                    worst_index = j
+
+    # Check that all indices were set
+    if np.any(best_indices == -1):
+        raise ValueError("Some indices were not set.")
+
+    return best_indices
+
+
+@njit(cache=True, fastmath=True)
 def selection_event(
     applicant_data: npt.NDArray[np.float64],
-    selection_predicate: float,
+    noise_multiplier: float,
     noise_distribution: Literal["normal", "uniform"],
     selection_size: int,
-    final_selection=False,
-) -> npt.NDArray[np.float64]:
+) -> npt.NDArray[np.int64]:
     # Get simulated measurements
     noised_applicant_data = simulated_measurements(
-        applicant_data, selection_predicate, noise_distribution
+        applicant_data, noise_multiplier, noise_distribution
     )
 
-    if final_selection:
-        applicant_idx = np.argmax(noised_applicant_data)
-        result = np.full(applicant_data.size, np.nan, dtype=np.float64)
-        result[applicant_idx] = applicant_data[applicant_idx]
-        return result
-
-    # Get the selection threshold
-    desired_quantile = 1 - selection_size / applicant_data.size
-    selection_threshold = np.quantile(noised_applicant_data, desired_quantile)
-
-    # Get the selected applicants
-    selected_applicants = noised_applicant_data >= selection_threshold
-
-    # Set the removed applicants to nan
-    result = applicant_data.copy()
-    result[~selected_applicants] = np.nan
-
-    return result
+    # Return the highest scoring applicants
+    return find_best_scores(noised_applicant_data, selection_size)
 
 
-@njit(cache=True)
+@njit(cache=True, fastmath=True, parallel=True)
 def full_selection_process(
     applicant_data: npt.NDArray[np.float64],
-    selection_predicates: npt.NDArray[np.float64],
+    noise_multipliers: npt.NDArray[np.float64],
     selection_sizes: npt.NDArray[np.int64],
     noise_type: Literal["normal", "uniform"],
 ) -> int:
     """Returns the index of the selected applicant."""
     # Sanity check selection sizes.
+    # Multipliers and sizes should have the same size.
     # They should be smaller than the number of applicants.
     # They should be in descending order.
+    # The last selection size should be 1.
+
+    if noise_multipliers.size != selection_sizes.size:
+        raise ValueError(
+            "Noise multipliers and selection sizes must have the same size."
+        )
     if selection_sizes.max() > applicant_data.size:
         raise ValueError(
             "Selection sizes cannot be larger than the number of applicants."
         )
     if not np.all(np.diff(selection_sizes) <= 0):
         raise ValueError("Selection sizes must be in descending order.")
+    if not selection_sizes[-1] == 1:
+        raise ValueError("Last selection size must be 1.")
 
     # Get the selected applicants
-    selected_applicants = np.ones(len(applicant_data)).astype(np.bool_)
+    applicant_indices = np.arange(applicant_data.size)
 
     # Iterate over the selection steps
-    final_step = selection_predicates.size - 1
-    for i in range(selection_predicates.size):
-        selection_predicate = selection_predicates[i]
+    for i in range(selection_sizes.size):
+        noise_multiplier = noise_multipliers[i]
         selection_size = selection_sizes[i]
         # Get the selected applicants for the current step
-        final = i == final_step
-        current_selected_applicants = selection_event(
-            applicant_data=applicant_data[selected_applicants],
-            selection_predicate=selection_predicate,
+        """ selected_indices = selection_event(
+            applicant_data=applicant_data[applicant_indices],
+            noise_multiplier=noise_multiplier,
             selection_size=selection_size,
-            final_selection=final,
             noise_distribution=noise_type,
+        ) """
+
+        noised_applicant_data = simulated_measurements(
+            applicant_data[applicant_indices], noise_multiplier, noise_type
         )
+        selected_indices = find_best_scores(noised_applicant_data, selection_size)
 
-        # Update the selected applicants
-        selected_applicants[selected_applicants] = selected_applicants[
-            selected_applicants
-        ] & ~np.isnan(current_selected_applicants)
+        applicant_indices = applicant_indices[selected_indices]
 
-        # If there is one or zero applicants left, stop the selection process
-        if selected_applicants.astype(np.int8).sum() == 1:
-            break
+        # If there is one applicant left, return the index
+        if applicant_indices.size <= 1:
+            if applicant_indices.size == 0:
+                raise ValueError("No applicant was selected.")
 
-    # Return the index of the selected applicant
-    return int(selected_applicants.astype(np.int8).argmax())
+            return applicant_indices[0]
+
+    raise ValueError("No applicant was selected.")
 
 
-@njit(cache=True)
-def run_simulation(
-    *,
+@njit(cache=True, fastmath=True, parallel=True)
+def get_result_of_fifty_sims(
     applicant_data: npt.NDArray[np.float64],
+    extended_data: npt.NDArray[np.float64],
     selection_predicates: npt.NDArray[np.float64],
     selection_sizes: npt.NDArray[np.int64],
-    n_simulations: int,
     noise_type: Literal["normal", "uniform"],
 ) -> npt.NDArray[np.int64]:
-    density = np.zeros(applicant_data.size, dtype=np.int64)
+    ITER = 50
+    results = np.zeros(ITER, dtype=np.int64)
 
-    for _ in range(n_simulations):
-        result = full_selection_process(
+    noise_multipliers = np.zeros(selection_predicates.size, dtype=np.float64)
+    for i, predicate in enumerate(selection_predicates):
+        noise_multipliers[i] = get_proper_noise_level(
+            extended_data, predicate, noise_type
+        )
+
+    for i in range(ITER):
+        results[i] = full_selection_process(
             applicant_data=applicant_data,
-            selection_predicates=selection_predicates,
+            noise_multipliers=noise_multipliers,
             selection_sizes=selection_sizes,
             noise_type=noise_type,
         )
 
-        # Update density
-        density[result] += 1
+    # convert returned indices to density
+    density_update = np.zeros(applicant_data.size, dtype=np.int64)
+    for i in range(ITER):
+        density_update[results[i]] += 1
 
-    return density
+    return density_update

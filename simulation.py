@@ -3,8 +3,14 @@ from typing import Literal
 import numpy as np
 import numpy.typing as npt
 import pandas as pd
+from tqdm import tqdm
 
-from compiled import run_simulation
+from compiled import (
+    extend_data,
+    full_selection_process,
+    get_proper_noise_level,
+    get_result_of_fifty_sims,
+)
 
 
 def combine_selection_predicates(predicates: list[float]) -> float:
@@ -29,10 +35,14 @@ def convert_selection_steps(
                 selection_predicates[i - 1 : i + 1].tolist()
             )
 
-    # remove steps which don't narrow down the selection
+    # raise error for non-decreasing selection sizes
     for i in range(selection_sizes.size - 1):
-        if selection_sizes[i] == selection_sizes[i + 1]:
-            selection_sizes[i] = -1
+        if selection_sizes[i] <= selection_sizes[i + 1]:
+            raise ValueError("Selection sizes must be decreasing.")
+
+    # raise error if last selection size is not 1
+    if selection_sizes[-1] != 1:
+        raise ValueError("Last selection size must be 1.")
 
     selection_predicates = selection_predicates[selection_sizes != -1]
     selection_sizes = selection_sizes[selection_sizes != -1]
@@ -40,23 +50,51 @@ def convert_selection_steps(
     return selection_predicates, selection_sizes
 
 
-def get_simulation_result(
+def run_simulation(
     *,
     applicant_data: npt.NDArray[np.float64],
     selection_steps: list[tuple[float, int]],
     n_simulations: int,
     noise_type: Literal["normal", "uniform"],
+    sim_title: str,
 ) -> pd.DataFrame:
     # convert selection steps to numpy arrays for numba
     selection_predicates, selection_sizes = convert_selection_steps(selection_steps)
 
-    density = run_simulation(
-        applicant_data=applicant_data,
-        selection_predicates=selection_predicates,
-        selection_sizes=selection_sizes,
-        n_simulations=n_simulations,
-        noise_type=noise_type,
-    )
+    density = np.zeros(applicant_data.size, dtype=np.int64)
+
+    # Expand data. This is to avoid overfitting the multiplier to the noise.
+    extended_data = extend_data(applicant_data)
+
+    with tqdm(total=n_simulations, desc=sim_title, leave=False) as pbar:
+        SIM_CONST = 50
+        for _ in range(n_simulations // SIM_CONST):
+            density += get_result_of_fifty_sims(
+                applicant_data=applicant_data,
+                extended_data=extended_data,
+                selection_predicates=selection_predicates,
+                selection_sizes=selection_sizes,
+                noise_type=noise_type,
+            )
+            pbar.update(SIM_CONST)
+
+        noise_multipliers = np.zeros(selection_predicates.size, dtype=np.float64)
+        for i, predicate in enumerate(selection_predicates):
+            noise_multipliers[i] = get_proper_noise_level(
+                extended_data, predicate, noise_type
+            )
+
+        for _ in range(n_simulations % SIM_CONST):
+            result = full_selection_process(
+                applicant_data=applicant_data,
+                noise_multipliers=noise_multipliers,
+                selection_sizes=selection_sizes,
+                noise_type=noise_type,
+            )
+
+            # Update density
+            density[result] += 1
+            pbar.update(1)
 
     # Create dataframe with applicant data and density
     return pd.DataFrame(

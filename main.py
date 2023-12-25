@@ -1,6 +1,5 @@
 import os
 from enum import Enum
-from multiprocessing import Pool
 from typing import Literal, TypedDict
 
 import matplotlib.pyplot as plt
@@ -10,20 +9,32 @@ import seaborn as sns
 from tqdm import tqdm
 
 from compiled import generate_applicant_data, simulated_measurements
-from simulation import combine_selection_predicates, get_simulation_result
+from simulation import combine_selection_predicates, run_simulation
 
 
 def plot_results(dfs: list[tuple[pd.DataFrame, str]], plot_title: str) -> None:
     # Set up dataframes for comparison
     processed_dfs = []
+    median_colors = {}  # Dictionary to store median values and corresponding colors
     for df, selection_process in dfs:
         df_copy = df.copy()
         df_copy["selection_process"] = selection_process
-        processed_dfs.append(
-            df_copy.loc[np.repeat(df_copy.index.values, df_copy["density"])]
-        )
+        repeated_df = df_copy.loc[np.repeat(df_copy.index.values, df_copy["density"])]
+        median = repeated_df["applicant_score"].median()  # Calculate median
+        median_colors[selection_process] = median  # Store median value
+        processed_dfs.append(repeated_df)
 
     res_df = pd.concat(processed_dfs)
+
+    # Set the style for dark background with white text and white gridlines
+    plt.style.use("dark_background")
+
+    # Create a custom color palette based on median values
+    color_palette = sns.color_palette("coolwarm", as_cmap=True)
+    color_mapping = {
+        process: color_palette(median_colors[process] / max(median_colors.values()))
+        for process in median_colors
+    }
 
     # Create seaborn plot
     g = sns.boxplot(
@@ -32,7 +43,7 @@ def plot_results(dfs: list[tuple[pd.DataFrame, str]], plot_title: str) -> None:
         y="applicant_score",
         hue="selection_process",
         legend=False,
-        palette="flare",
+        palette=color_mapping,
     )
     g.set_ylabel("Applicant score")
     g.set_xlabel("")
@@ -59,8 +70,11 @@ def plot_score_distribution(
     name_suffix: str = "",
 ) -> None:
     ### Plot the base score distribution ###
+    # Set the style for dark background with white text and white gridlines
+    plt.style.use("dark_background")
+
     # Create seaborn plot
-    g = sns.scatterplot(data=applicant_data, color="blue")
+    g = sns.scatterplot(data=applicant_data, color="white")
     g.set_ylabel("Real applicant score")
     g.set_xlabel("Applicant ID")
     g.set_title("Applicant score distribution")
@@ -77,6 +91,9 @@ def plot_score_distribution(
     plt.clf()
 
     ### Plot the noised score distribution ###
+    # Set the style for dark background with white text and white gridlines
+    plt.style.use("dark_background")
+
     # Get simulated measurements
     noised_applicant_data = simulated_measurements(applicant_data, 0.5, noise_type)
 
@@ -84,7 +101,7 @@ def plot_score_distribution(
     g = sns.regplot(
         x=np.arange(applicant_data.size),
         y=noised_applicant_data,
-        color="blue",
+        color="white",
         ci=None,
         order=2,
         line_kws=dict(color="r"),
@@ -154,10 +171,10 @@ class SelectionProcedure:
 if __name__ == "__main__":
     ### Configuration ###
     N = 200  # Number of applicants at the start of the selection process
-    SIMULATIONS = 10_000  # Number of simulations to run
+    SIMULATIONS = 100_000  # Number of simulations to run
     selected_distribution = ApplicantScoreDistributionTypes.power_law.value
     noise_type = NoiseDistributionTypes.normal.value
-    load_data = True  # Set to False to regenerate data
+    load_data = False  # Set to False to regenerate data
     #####################
 
     ### Generate applicant data ###
@@ -182,10 +199,11 @@ if __name__ == "__main__":
             SelectionProcedure.Cognitive_ability_tests,
         ]
     )
-    serious_CV_screening = combine_selection_predicates(
+    ro_serious_final_step = combine_selection_predicates(
         [
             SelectionProcedure.Job_experience_years,
             SelectionProcedure.Interests,
+            SelectionProcedure.Employment_interviews_structured,
         ]
     )
     ideal_screening = combine_selection_predicates(
@@ -219,14 +237,13 @@ if __name__ == "__main__":
         (CV_screening, 1),
     ]
     serious_steps: StepsType = [
-        (serious_CV_screening, 50),
+        (SelectionProcedure.Job_experience_years, 50),
         (test_screening, 20),
         (SelectionProcedure.Employment_interviews_structured, 1),
     ]
     ro_serious_steps: StepsType = [
         (test_screening, 20),
-        (SelectionProcedure.Employment_interviews_structured, 20),
-        (serious_CV_screening, 1),
+        (ro_serious_final_step, 1),
     ]
 
     our_steps: StepsType = [(ideal_screening, 1)]
@@ -305,39 +322,19 @@ if __name__ == "__main__":
             sim_step["df"] = pd.read_csv(f"results/{alias}.csv")
 
     else:
-        ### Run simulations ###
-        processor_count = os.cpu_count()
-        if processor_count is None:
-            processor_count = 1
-        elif processor_count > 4:
-            processor_count -= 2
-        elif processor_count > 2:
-            processor_count -= 1
-
-        def run_simulation_wrapper(sim_step: SimStepType) -> pd.DataFrame:
-            print(f"Running simulation for: {sim_step['title']}")
-            return get_simulation_result(
-                applicant_data=sim_step.get("applicant_data", applicant_data),
-                selection_steps=sim_step["steps"],
-                n_simulations=SIMULATIONS,
-                noise_type=noise_type,
-            )
-
-        if processor_count == 1:
-            # Run simulations sequentially
-            sim_results = []
-            for sim_step in tqdm(sim_steps.values()):
-                sim_results.append(run_simulation_wrapper(sim_step))
-        else:
-            # Run simulations in parallel
-            with Pool(processor_count) as p:
-                sim_results = list(
-                    tqdm(
-                        p.imap(run_simulation_wrapper, sim_steps.values()),
-                        total=len(sim_steps),
-                        desc="Simulations Progress",
+        sim_results = []
+        with tqdm(total=len(sim_steps), desc="Simulations") as pbar:
+            for sim_step in sim_steps.values():
+                sim_results.append(
+                    run_simulation(
+                        applicant_data=sim_step.get("applicant_data", applicant_data),
+                        selection_steps=sim_step["steps"],
+                        n_simulations=SIMULATIONS,
+                        noise_type=noise_type,
+                        sim_title=sim_step["title"],
                     )
                 )
+                pbar.update(1)
 
         # Save results
         for (alias, sim_step), sim_res in zip(sim_steps.items(), sim_results):
@@ -347,6 +344,17 @@ if __name__ == "__main__":
     # Check if all data is available
     if any(not isinstance(x["df"], pd.DataFrame) for x in sim_steps.values()):
         raise RuntimeError("Missing data for some plots")
+
+    # Plot the standard selection processes
+    plots = [
+        "standard",
+        "advanced",
+        "serious",
+    ]
+    dfs: list[tuple[pd.DataFrame, str]] = [  # type: ignore
+        (sim_steps[x]["df"], sim_steps[x]["title"]) for x in plots if x in sim_steps
+    ]
+    plot_results(dfs, "Standard selection processes")
 
     # Plot the effects of reordering the selection process
     plots = [

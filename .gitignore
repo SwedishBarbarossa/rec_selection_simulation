@@ -2,3 +2,4 @@ plots/*
 .venv
 __pycache__
 .pytest_cache
+full_selection_process.prof
