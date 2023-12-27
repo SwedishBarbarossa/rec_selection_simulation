@@ -4,11 +4,16 @@ from typing import Literal, TypedDict
 
 import matplotlib.pyplot as plt
 import numpy as np
+import numpy.typing as npt
 import pandas as pd
 import seaborn as sns
 from tqdm import tqdm
 
-from compiled import generate_applicant_data, simulated_measurements
+from compiled import (
+    generate_applicant_data,
+    get_proper_noise_level,
+    simulated_measurements,
+)
 from simulation import combine_selection_predicates, run_simulation
 
 
@@ -18,10 +23,13 @@ def plot_results(dfs: list[tuple[pd.DataFrame, str]], plot_title: str) -> None:
     median_colors = {}  # Dictionary to store median values and corresponding colors
     for df, selection_process in dfs:
         df_copy = df.copy()
+        df_copy["applicant_score"] /= np.max(  # fit applicant_score to 0-1 scale
+            df_copy["applicant_score"]
+        )
         df_copy["selection_process"] = selection_process
         repeated_df = df_copy.loc[np.repeat(df_copy.index.values, df_copy["density"])]
         median = repeated_df["applicant_score"].median()  # Calculate median
-        median_colors[selection_process] = median  # Store median value
+        median_colors[selection_process] = 1 - median  # Store median value
         processed_dfs.append(repeated_df)
 
     res_df = pd.concat(processed_dfs)
@@ -69,15 +77,24 @@ def plot_score_distribution(
     noise_type: Literal["normal", "uniform"],
     name_suffix: str = "",
 ) -> None:
+    # Fit data to 0-1 scale
+    applicant_data_cpy: npt.NDArray[np.float64] = applicant_data.copy()
+    applicant_data_cpy /= max(
+        np.max(applicant_data_cpy), abs(np.min(applicant_data_cpy))
+    )
+
     ### Plot the base score distribution ###
     # Set the style for dark background with white text and white gridlines
     plt.style.use("dark_background")
 
     # Create seaborn plot
-    g = sns.scatterplot(data=applicant_data, color="white")
+    g = sns.lineplot(data=applicant_data_cpy, color="white")
     g.set_ylabel("Real applicant score")
     g.set_xlabel("Applicant ID")
     g.set_title("Applicant score distribution")
+
+    # Set y-axis limits
+    g.set_ylim(-1.1, 1.1)
 
     # set size
     plt.gcf().set_size_inches(12, 8)
@@ -91,38 +108,94 @@ def plot_score_distribution(
     plt.clf()
 
     ### Plot the noised score distribution ###
-    # Set the style for dark background with white text and white gridlines
-    plt.style.use("dark_background")
+    NUM_SIMULATIONS = 7  # Number of simulated selections per correlation
+    for correlate in [0.1, 0.3, 0.5]:
+        # Get simulated measurements
+        noise_level = get_proper_noise_level(applicant_data_cpy, correlate, noise_type)
+        noised_applicant_data = simulated_measurements(
+            applicant_data_cpy, noise_level, noise_type
+        )
 
-    # Get simulated measurements
-    noised_applicant_data = simulated_measurements(applicant_data, 0.5, noise_type)
+        # Plot the noised score distribution
+        g = sns.scatterplot(data=noised_applicant_data, color="white", marker="x")
+        g.set_ylabel("Simulated applicant score")
+        g.set_xlabel("Applicant ID")
+        g.set_title(f"Simulated applicant measurement ({noise_type}, {correlate})")
 
-    # Create seaborn plot with regression line
-    g = sns.regplot(
-        x=np.arange(applicant_data.size),
-        y=noised_applicant_data,
-        color="white",
-        ci=None,
-        order=2,
-        line_kws=dict(color="r"),
-        marker="x",
-        truncate=True,
-        scatter=True,
-    )
-    g.set_ylabel("Simulated applicant measurement")
-    g.set_xlabel("Applicant ID")
-    g.set_title(f"Noised applicant score distribution ({noise_type})")
+        # Add line based on the real applicant score
+        g = sns.lineplot(data=applicant_data_cpy, color="red")  # Line plot
 
-    # set size
-    plt.gcf().set_size_inches(12, 8)
+        # Set y-axis limits
+        limits = (
+            max(noised_applicant_data.max(), abs(noised_applicant_data.min())) * 1.1
+        )
+        g.set_ylim(-limits, limits)
 
-    # save plot
-    current_dir = os.path.dirname(os.path.realpath(__file__))
-    file_name = f"noised_applicant_score_distribution_{noise_type}"
-    plt.savefig(f"{current_dir}/plots/{file_name}{name_suffix}.png")
+        # set size
+        plt.gcf().set_size_inches(12, 8)
 
-    # clear plot
-    plt.clf()
+        # save plot
+        current_dir = os.path.dirname(os.path.realpath(__file__))
+        file_name = f"simulated_applicant_measurement_{noise_type}_{correlate}".replace(
+            ".", "_"
+        )
+        plt.savefig(f"{current_dir}/plots/{file_name}{name_suffix}.png")
+
+        # clear plot
+        plt.clf()
+
+        # Run a couple of simulations and pick out the top 20 applicants
+        dataframes = []
+        for i in range(NUM_SIMULATIONS):
+            # Get simulated measurements
+            noised_applicant_data = simulated_measurements(
+                applicant_data_cpy, noise_level, noise_type
+            )
+
+            # get indices of the top 20 applicants
+            top_20 = np.argsort(noised_applicant_data)[-20:]
+            top_20_scores = noised_applicant_data[top_20]
+            dataframes.append(
+                pd.DataFrame(
+                    {
+                        "applicant_score": top_20_scores,
+                        "applicant_ID": top_20,
+                        "simulation": f"Simulation {i+1}",
+                    }
+                )
+            )
+
+        df = pd.concat(dataframes)
+        # Plot the noised score distribution
+        g = sns.scatterplot(
+            x=df["applicant_ID"],
+            y=df["applicant_score"],
+            hue=df["simulation"],
+            palette="tab10",
+            s=100,
+        )
+        g.set_ylabel("Simulated applicant score")
+        g.set_xlabel("Applicant ID")
+        g.set_title(f"Simulated top 20 applicant selection ({noise_type}, {correlate})")
+
+        # Add line based on the real applicant score
+        g = sns.lineplot(data=applicant_data_cpy, color="red")  # Line plot
+
+        # Set x-axis limits to leave space for the legend
+        g.set_xlim(-applicant_data_cpy.size * 0.05, applicant_data_cpy.size * 1.25)
+
+        # set size
+        plt.gcf().set_size_inches(12, 8)
+
+        # save plot
+        current_dir = os.path.dirname(os.path.realpath(__file__))
+        file_name = f"simulated_applicant_selection_{noise_type}_{correlate}".replace(
+            ".", "_"
+        )
+        plt.savefig(f"{current_dir}/plots/{file_name}{name_suffix}.png")
+
+        # clear plot
+        plt.clf()
 
 
 class ApplicantScoreDistributionTypes(Enum):
@@ -174,7 +247,7 @@ if __name__ == "__main__":
     SIMULATIONS = 100_000  # Number of simulations to run
     selected_distribution = ApplicantScoreDistributionTypes.power_law.value
     noise_type = NoiseDistributionTypes.normal.value
-    load_data = False  # Set to False to regenerate data
+    load_data = True  # Set to False to regenerate data
     #####################
 
     ### Generate applicant data ###
@@ -214,6 +287,15 @@ if __name__ == "__main__":
             SelectionProcedure.Commute_distance,
         ]
     )
+    ideal_screening_bio = combine_selection_predicates(
+        [
+            SelectionProcedure.Job_experience_years,
+            SelectionProcedure.Cognitive_ability_tests,
+            SelectionProcedure.Big_5_overall,
+            SelectionProcedure.Commute_distance,
+            SelectionProcedure.Empirically_keyed_biodata,
+        ]
+    )
 
     ### Selection steps ###
     # format: (selection_predicate, remaining_applicants)
@@ -251,6 +333,11 @@ if __name__ == "__main__":
         (ideal_screening, 10),
         (SelectionProcedure.Employment_interviews_structured, 1),
     ]
+    our_steps_two: StepsType = [(ideal_screening_bio, 1)]
+    our_steps_two_sel_q: StepsType = [
+        (ideal_screening_bio, 10),
+        (SelectionProcedure.Employment_interviews_structured, 1),
+    ]
 
     ### Simulation steps ###
     SimStepType = TypedDict(
@@ -263,7 +350,7 @@ if __name__ == "__main__":
     )
     sim_steps: dict[str, SimStepType] = {
         "standard": {
-            "title": "Standard selection process",
+            "title": "Standard process",
             "steps": standard_steps,
             "df": None,
         },
@@ -273,22 +360,22 @@ if __name__ == "__main__":
             "df": None,
         },
         "advanced": {
-            "title": "Advanced standard process",
+            "title": "Advanced process",
             "steps": advanced_steps,
             "df": None,
         },
         "ro_advanced": {
-            "title": "Reordered advanced standard process",
+            "title": "Reordered advanced process",
             "steps": ro_advanced_steps,
             "df": None,
         },
         "serious": {
-            "title": "Serious standard process",
+            "title": "Serious process",
             "steps": serious_steps,
             "df": None,
         },
         "ro_serious": {
-            "title": "Reordered serious standard process",
+            "title": "Reordered serious process",
             "steps": ro_serious_steps,
             "df": None,
         },
@@ -311,6 +398,28 @@ if __name__ == "__main__":
         "our_sel_q_large": {
             "title": "Our process (selection questions, 10 000)",
             "steps": our_steps_sel_q,
+            "df": None,
+            "applicant_data": applicant_data_large,  # type: ignore
+        },
+        "our_bio": {
+            "title": "Our selection process (biodata)",
+            "steps": our_steps_two,
+            "df": None,
+        },
+        "our_bio_large": {
+            "title": "Our selection process (biodata, 10 000)",
+            "steps": our_steps_two,
+            "df": None,
+            "applicant_data": applicant_data_large,  # type: ignore
+        },
+        "our_bio_sel_q": {
+            "title": "Our process (biodata, selection questions)",
+            "steps": our_steps_two_sel_q,
+            "df": None,
+        },
+        "our_bio_sel_q_large": {
+            "title": "Our process (biodata, selection questions, 10 000)",
+            "steps": our_steps_two_sel_q,
             "df": None,
             "applicant_data": applicant_data_large,  # type: ignore
         },
@@ -370,17 +479,31 @@ if __name__ == "__main__":
     ]
     plot_results(dfs, "Reversing the selection process")
 
-    # Plot how we compare to other selection processes
+    # Plot our selection processes
     plots = [
-        "standard",
-        "advanced",
-        "serious",
         "our",
         "our_sel_q",
+        "our_bio",
+        "our_bio_sel_q",
         "our_large",
         "our_sel_q_large",
+        "our_bio_large",
+        "our_bio_sel_q_large",
     ]
     dfs: list[tuple[pd.DataFrame, str]] = [  # type: ignore
         (sim_steps[x]["df"], sim_steps[x]["title"]) for x in plots if x in sim_steps
     ]
-    plot_results(dfs, "Comparison of selection processes")
+    plot_results(dfs, "Our selection process at different stages")
+
+    # Plot our current and future selection processes compared to the standard process
+    plots = [
+        "standard",
+        "advanced",
+        "our",
+        "our_sel_q_large",
+        "our_bio_sel_q_large",
+    ]
+    dfs: list[tuple[pd.DataFrame, str]] = [  # type: ignore
+        (sim_steps[x]["df"], sim_steps[x]["title"]) for x in plots if x in sim_steps
+    ]
+    plot_results(dfs, "Our process compared to current options")
