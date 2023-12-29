@@ -13,10 +13,28 @@ from compiled import (
 )
 
 
-def combine_selection_predicates(predicates: list[float]) -> float:
-    arr = np.array(predicates)
-    arr = arr**2
-    return np.sqrt(np.sum(arr))
+def combine_selection_predicates(correlation_list: list[float]) -> float:
+    # Convert the list of correlations to a NumPy array
+    correlations = np.array(correlation_list, dtype=np.float64)
+
+    # Fisher's z-transformation for each correlation
+    z_scores: npt.NDArray[np.float64] = (
+        np.log((1 + correlations) / (1 - correlations)) * 0.5
+    )
+
+    # Summing the z-scores
+    summed_z_score: float = z_scores.sum()
+
+    # Inverse Fisher's z-transformation for the summed z-score
+    doubled_summed_z_score = summed_z_score * 2
+    exp_z_score: np.float64 = np.exp(doubled_summed_z_score)
+    inverse_z_sum = (exp_z_score - 1) / (exp_z_score + 1)
+    if inverse_z_sum > 1:
+        raise ValueError(
+            "Inverse Fisher's z-transformation resulted in correlation > 1"
+        )
+
+    return inverse_z_sum
 
 
 def convert_selection_steps(
