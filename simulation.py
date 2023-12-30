@@ -48,9 +48,9 @@ def convert_selection_steps(
 
     # combine successive selection predicates
     if selection_predicates.size > 1:
-        for i in range(1, selection_predicates.size):
+        for i in range(selection_predicates.size - 1, -1, -1):
             selection_predicates[i] = combine_selection_predicates(
-                selection_predicates[i - 1 : i + 1].tolist()
+                selection_predicates[0 : i + 1].tolist()
             )
 
     # raise error for non-decreasing selection sizes
