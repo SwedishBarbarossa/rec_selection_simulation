@@ -109,7 +109,7 @@ def plot_score_distribution(
 
     ### Plot the noised score distribution ###
     NUM_SIMULATIONS = 7  # Number of simulated selections per correlation
-    for correlate in [0.1, 0.3, 0.5]:
+    for correlate in [0.1, 0.3, 0.5, 0.7]:
         # Get simulated measurements
         noise_level = get_proper_noise_level(applicant_data_cpy, correlate, noise_type)
         noised_applicant_data = simulated_measurements(
@@ -500,7 +500,7 @@ if __name__ == "__main__":
         "standard",
         "advanced",
         "our",
-        "our_sel_q_large",
+        "our_large",
         "our_bio_sel_q_large",
     ]
     dfs: list[tuple[pd.DataFrame, str]] = [  # type: ignore
