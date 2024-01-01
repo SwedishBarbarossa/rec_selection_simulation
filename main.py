@@ -397,31 +397,64 @@ class SelectionProcedure:
 
     # unspecified sources are from 10.1037/apl0000994
 
-    # Tests
-    Big_5_contextualized = 0.48  # personality test
+    ### Tests ###
+    # Big 5
+    Openness_to_experience = 0.05
+    Conscientiousness = 0.19
+    Extraversion = 0.10
+    Agreeableness = 0.10
+    Emotional_stability = 0.09
+
+    # Big 5 contextualized
+    Openness_to_experience_contextualized = 0.12
+    Conscientiousness_contextualized = 0.25
+    Extraversion_contextualized = 0.21
+    Agreeableness_contextualized = 0.19
+    Emotional_stability_contextualized = 0.23
+
+    # rest of tests
     Job_knowledge_tests = 0.4
     Work_sample_tests = 0.33
     Cognitive_ability_tests = 0.31
     Integrity_tests = 0.31
     Personality_based_EI = 0.3  # Emotional intelligence
-    Big_5_overall = 0.27  # personality test
     SJT_knowledge = 0.26  # situational judgment test
     SJT_behavioral_tendency = 0.26  # situational judgment test
     Ability_based_EI = 0.22  # Emotional intelligence
 
-    # Interviews
+    ### Interviews ###
     Employment_interviews_structured = 0.42
     Employment_interviews_unstructured = 0.19
 
-    # Biodata
+    ### Biodata ###
     Empirically_keyed_biodata = 0.38  # questionnaires
     Interests = 0.24
     Rationally_keyed_biodata = 0.22  # questionnaires
     Job_experience_years = 0.09
 
-    # Other
+    ### Other ###
     Assessment_centers = 0.29
     Commute_distance = 0.103  # from 10.1080/10803548.2021.2010970
+
+    @classmethod
+    def Big_5_contextualized(cls) -> list[float]:  # personality test
+        return [
+            cls.Openness_to_experience_contextualized,
+            cls.Conscientiousness_contextualized,
+            cls.Extraversion_contextualized,
+            cls.Agreeableness_contextualized,
+            cls.Emotional_stability_contextualized,
+        ]
+
+    @classmethod
+    def Big_5_overall(cls) -> list[float]:  # personality test
+        return [
+            cls.Openness_to_experience,
+            cls.Conscientiousness,
+            cls.Extraversion,
+            cls.Agreeableness,
+            cls.Emotional_stability,
+        ]
 
 
 if __name__ == "__main__":
@@ -432,7 +465,7 @@ if __name__ == "__main__":
     NOISE_TYPE = NoiseDistributionTypes.normal.value
     LOAD_DATA = True  # Set to False to regenerate data
     GENERATE_EXPLANATORY_PLOTS = False  # Set to True to generate explanatory plots
-    GENERATE_COST_BENEFIT_PLOT = True  # Set to True to generate cost-benefit plot
+    GENERATE_COST_BENEFIT_PLOT = False  # Set to True to generate cost-benefit plot
     #####################
 
     ### Generate applicant data ###
@@ -454,7 +487,7 @@ if __name__ == "__main__":
     CV_screening = SelectionProcedure.Job_experience_years
     test_screening = combine_selection_predicates(
         [
-            SelectionProcedure.Big_5_overall,
+            *SelectionProcedure.Big_5_overall(),
             SelectionProcedure.Cognitive_ability_tests,
         ]
     )
@@ -467,17 +500,17 @@ if __name__ == "__main__":
     )
     ideal_screening = combine_selection_predicates(
         [
+            *SelectionProcedure.Big_5_overall(),
             SelectionProcedure.Job_experience_years,
             SelectionProcedure.Cognitive_ability_tests,
-            SelectionProcedure.Big_5_overall,
             SelectionProcedure.Commute_distance,
         ]
     )
     ideal_screening_bio = combine_selection_predicates(
         [
+            *SelectionProcedure.Big_5_overall(),
             SelectionProcedure.Job_experience_years,
             SelectionProcedure.Cognitive_ability_tests,
-            SelectionProcedure.Big_5_overall,
             SelectionProcedure.Commute_distance,
             SelectionProcedure.Empirically_keyed_biodata,
         ]
