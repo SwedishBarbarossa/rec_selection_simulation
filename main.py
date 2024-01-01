@@ -198,6 +198,189 @@ def plot_score_distribution(
         plt.clf()
 
 
+def plot_cost_benefit(
+    standard_df: pd.DataFrame,
+    advanced_df: pd.DataFrame,
+    serious_df: pd.DataFrame,
+    our_df: pd.DataFrame,
+    our_large_df: pd.DataFrame,
+) -> None:
+    MAX_COST = 200_000  # Maximum cost of recruitment
+    MIN_COST = 0  # Minimum cost of recruitment
+    MIN_STEP = 10_000  # Minimum step size for cost of recruitment
+    ALTERNATIVE_COST = 700_000  # Cost of failed recruitment
+
+    MIN_PERCENTAGE = 0.3  # Minimum percentage of successful recruitment
+    MAX_PERCENTAGE = 1.0  # Maximum percentage of successful recruitment
+
+    stats_mapping = {
+        "Standard": {
+            "cost": 30_000,  # guess
+            "chance": 0,
+            "df": standard_df.copy(),
+        },
+        "Advanced": {
+            "cost": 100_000,  # guess
+            "chance": 0,
+            "df": advanced_df.copy(),
+        },
+        "Serious": {
+            "cost": 150_000,  # guess
+            "chance": 0,
+            "df": serious_df.copy(),
+        },
+        "Our": {
+            "cost": 30_000,
+            "chance": 0,
+            "df": our_df.copy(),
+        },
+        "Our (10 000)": {
+            "cost": 30_000,
+            "chance": 0,
+            "df": our_large_df.copy(),
+        },
+    }
+
+    for alias in stats_mapping:
+        ### Calculate the chance of success ###
+        # The DF has 3 columns:
+        # - applicant_ID: The ID of the applicant
+        # - applicant_score: The score of the applicant
+        # - density: The number of times the applicant got selected in the process
+        # Assume the relationship between applicant_score and chance of success is linear
+        # Assume max applicant_score is 100% chance of success
+        # Assume zero applicant_score is 0% chance of success
+
+        # Get the DF
+        df = stats_mapping[alias]["df"]
+
+        # Density sum
+        density_sum = df["density"].sum()
+
+        # Normalize the score column to 0-1
+        df["applicant_score"] /= np.max(df["applicant_score"])
+
+        # Multiply the score column by density to get the total score
+        df["applicant_score"] *= df["density"]
+
+        # Normalize the score column by the number of selections
+        df["applicant_score"] /= density_sum
+
+        # Set the chance of success
+        stats_mapping[alias]["chance"] = df["applicant_score"].sum()
+
+    stats_df = pd.DataFrame(
+        {
+            "title": list(stats_mapping.keys()),
+            "cost": [x["cost"] for x in stats_mapping.values()],
+            "chance": [x["chance"] for x in stats_mapping.values()],
+        }
+    )
+
+    # Set the style for dark background with white text and white gridlines
+    plt.style.use("dark_background")
+
+    ### Plot the heatmap ###
+    # Function to calculate the expected average cost
+    def calculate_expected_cost(chance, cost):
+        return cost * chance + ALTERNATIVE_COST * (1 - chance)
+
+    costs = np.linspace(
+        MAX_COST, MIN_COST, MAX_COST // MIN_STEP * 5 + 1, endpoint=True
+    ).astype(np.int64)
+    chances = np.linspace(
+        MAX_PERCENTAGE,
+        MIN_PERCENTAGE,
+        int((MAX_PERCENTAGE - MIN_PERCENTAGE) * 100 + 1),
+        endpoint=True,
+    )
+
+    # Calculating the expected average cost for each combination of chance and cost
+    expected_costs = np.zeros((len(chances), len(costs)))
+    for i in range(len(chances)):
+        for j in range(len(costs)):
+            expected_costs[i][j] = calculate_expected_cost(chances[i], costs[j])
+
+    # Create a custom color map from blue to red
+    cmap = sns.diverging_palette(
+        240, 10, s=500, l=20, as_cmap=True, center="dark", sep=20
+    )
+
+    # Plotting the background heatmap
+    sns.heatmap(
+        expected_costs,
+        cmap=cmap,
+        xticklabels=[f"{x:,}".replace(",", " ") for x in costs],
+        yticklabels=[f"{x:.0%}" for x in chances],
+    )
+
+    # Get the current Axes object to access the colorbar
+    ax = plt.gca()
+    # Access the colorbar object
+    cbar = ax.collections[0].colorbar
+    if cbar is None:
+        raise RuntimeError("Could not access colorbar")
+
+    # Set title for the color scale bar
+    cbar.set_label(
+        "Expected Total Cost of Recruitment (SEK)", rotation=270, labelpad=-55
+    )
+
+    cbar.set_ticklabels(
+        [f"{x:,}".replace(",", " ").split(".")[0] for x in cbar.get_ticks()]
+    )
+
+    ### Plot the points ###
+    # Scale stats_df to the same scale as the heatmap
+    scaled_df = stats_df.copy()
+    scaled_df["cost"] = (scaled_df["cost"] - MIN_COST) / (MAX_COST - MIN_COST)
+    scaled_df["cost"] *= costs.size
+    scaled_df["cost"] = costs.size - scaled_df["cost"]
+
+    scaled_df["chance"] = (scaled_df["chance"] - MIN_PERCENTAGE) / (
+        MAX_PERCENTAGE - MIN_PERCENTAGE
+    )
+    scaled_df["chance"] *= chances.size
+    scaled_df["chance"] = chances.size - scaled_df["chance"]
+
+    # Marking the points
+    sns.scatterplot(
+        data=scaled_df,
+        x="cost",
+        y="chance",
+        hue="title",
+        palette="bright",
+        s=250,
+    )
+
+    ### Finishing touches ###
+    # Show only x-labels divisible by MIN_STEP
+    for label in plt.gca().xaxis.get_ticklabels():
+        if int(label.get_text().replace(" ", "")) % MIN_STEP != 0:
+            label.set_visible(False)
+
+    # Show only every 10th y-axis label
+    for label in plt.gca().yaxis.get_ticklabels():
+        if not label.get_text().endswith("0%"):
+            label.set_visible(False)
+
+    # Adding labels and title
+    plt.xlabel("Cost of Recruitment (SEK)")
+    plt.ylabel("Odds of Successful Recruitment")
+    plt.title("Expected Average Cost of Recruitment based on Cost")
+
+    # Set size
+    plt.gcf().set_size_inches(12, 8)
+
+    # Save the plot
+    current_dir = os.path.dirname(os.path.realpath(__file__))
+    file_name = "cost_benefit"
+    plt.savefig(f"{current_dir}/plots/{file_name}.png")
+
+    # Clear the plot
+    plt.clf()
+
+
 class ApplicantScoreDistributionTypes(Enum):
     sigmoid = "sigmoid"
     power_law = "power_law"
@@ -245,24 +428,27 @@ if __name__ == "__main__":
     ### Configuration ###
     N = 200  # Number of applicants at the start of the selection process
     SIMULATIONS = 100_000  # Number of simulations to run
-    selected_distribution = ApplicantScoreDistributionTypes.power_law.value
-    noise_type = NoiseDistributionTypes.normal.value
-    load_data = True  # Set to False to regenerate data
+    SELECTED_DISTRIBUTION = ApplicantScoreDistributionTypes.power_law.value
+    NOISE_TYPE = NoiseDistributionTypes.normal.value
+    LOAD_DATA = True  # Set to False to regenerate data
+    GENERATE_EXPLANATORY_PLOTS = False  # Set to True to generate explanatory plots
+    GENERATE_COST_BENEFIT_PLOT = True  # Set to True to generate cost-benefit plot
     #####################
 
     ### Generate applicant data ###
     # Generate default applicant data based on the selected distribution
-    applicant_data = generate_applicant_data(N, selected_distribution)
-    applicant_data_large = generate_applicant_data(10_000, selected_distribution)
+    applicant_data = generate_applicant_data(N, SELECTED_DISTRIBUTION)
+    applicant_data_large = generate_applicant_data(10_000, SELECTED_DISTRIBUTION)
 
     # Create plot folder if it doesn't exist
     current_dir = os.path.dirname(os.path.realpath(__file__))
     if not os.path.exists(f"{current_dir}/plots"):
         os.makedirs(f"{current_dir}/plots")
 
-    # Plot the score distributions
-    plot_score_distribution(applicant_data, noise_type)
-    plot_score_distribution(applicant_data_large, noise_type, "_large")
+    if GENERATE_EXPLANATORY_PLOTS:
+        # Plot the score distributions
+        plot_score_distribution(applicant_data, NOISE_TYPE)
+        plot_score_distribution(applicant_data_large, NOISE_TYPE, "_large")
 
     #### Screenings ####
     CV_screening = SelectionProcedure.Job_experience_years
@@ -425,7 +611,7 @@ if __name__ == "__main__":
         },
     }
 
-    if load_data:
+    if LOAD_DATA:
         for alias, sim_step in sim_steps.items():
             print(f"Loading data for: {sim_step['title']}")
             sim_step["df"] = pd.read_csv(f"results/{alias}.csv")
@@ -439,7 +625,7 @@ if __name__ == "__main__":
                         applicant_data=sim_step.get("applicant_data", applicant_data),
                         selection_steps=sim_step["steps"],
                         n_simulations=SIMULATIONS,
-                        noise_type=noise_type,
+                        noise_type=NOISE_TYPE,
                         sim_title=sim_step["title"],
                     )
                 )
@@ -453,6 +639,16 @@ if __name__ == "__main__":
     # Check if all data is available
     if any(not isinstance(x["df"], pd.DataFrame) for x in sim_steps.values()):
         raise RuntimeError("Missing data for some plots")
+
+    if GENERATE_COST_BENEFIT_PLOT:
+        # Plot the cost-benefit plot
+        plot_cost_benefit(
+            standard_df=sim_steps["standard"]["df"],  # type: ignore
+            advanced_df=sim_steps["advanced"]["df"],  # type: ignore
+            serious_df=sim_steps["serious"]["df"],  # type: ignore
+            our_df=sim_steps["our"]["df"],  # type: ignore
+            our_large_df=sim_steps["our_large"]["df"],  # type: ignore
+        )
 
     # Plot the standard selection processes
     plots = [
