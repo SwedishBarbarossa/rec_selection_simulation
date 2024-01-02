@@ -7,6 +7,7 @@ import numpy as np
 import numpy.typing as npt
 import pandas as pd
 import seaborn as sns
+from numba import njit
 from tqdm import tqdm
 
 from compiled import (
@@ -198,6 +199,21 @@ def plot_score_distribution(
         plt.clf()
 
 
+@njit(cache=True)
+def calculate_expected_costs(
+    chances: npt.NDArray[np.float64], costs: npt.NDArray[np.int64], failed_cost: int
+):
+    """Calculate the expected average cost for each combination of chance and cost."""
+    expected_costs = np.zeros((chances.size, costs.size))
+    for i in range(chances.size):
+        for j in range(costs.size):
+            expected_costs[i][j] = costs[j] * chances[i] + (
+                failed_cost * (1 - chances[i])
+            )
+
+    return expected_costs
+
+
 def plot_cost_benefit(
     standard_df: pd.DataFrame,
     advanced_df: pd.DataFrame,
@@ -207,11 +223,28 @@ def plot_cost_benefit(
 ) -> None:
     MAX_COST = 200_000  # Maximum cost of recruitment
     MIN_COST = 0  # Minimum cost of recruitment
-    MIN_STEP = 10_000  # Minimum step size for cost of recruitment
+    cost_step = 25  # Step size for cost of recruitment
+    cost_span = MAX_COST - MIN_COST
+    if cost_span % cost_step != 0:
+        raise RuntimeError("Cost span is not divisible by cost step")
+    # Number of steps for cost of recruitment
+    COST_STEPS = (MAX_COST - MIN_COST) // cost_step
+    cost_tick_step = 10_000  # Step size for cost of recruitment
+    # Number of steps for cost of recruitment
+    COST_TICK_STEPS = (MAX_COST - MIN_COST) // cost_tick_step + 1
+
     ALTERNATIVE_COST = 700_000  # Cost of failed recruitment
 
-    MIN_PERCENTAGE = 0.3  # Minimum percentage of successful recruitment
-    MAX_PERCENTAGE = 1.0  # Maximum percentage of successful recruitment
+    MIN_CHANCE = 0.3  # Minimum percentage of successful recruitment
+    MAX_CHANCE = 1.0  # Maximum percentage of successful recruitment
+    chance_steps_per_p = 10  # Number of steps per percentage point
+    chance_span = (MAX_CHANCE - MIN_CHANCE) * 100
+    if chance_span % chance_steps_per_p != 0:
+        raise RuntimeError("Chance span is not divisible by chance step")
+    # Number of steps for chance of success
+    CHANCE_STEPS = int((MAX_CHANCE - MIN_CHANCE) * 100 * chance_steps_per_p)
+    chance_tick_step = 0.1  # Step size for chance of success
+    CHANCE_TICK_STEPS = int(((MAX_CHANCE - MIN_CHANCE) // chance_tick_step)) + 2
 
     stats_mapping = {
         "Standard": {
@@ -281,37 +314,32 @@ def plot_cost_benefit(
     plt.style.use("dark_background")
 
     ### Plot the heatmap ###
-    # Function to calculate the expected average cost
-    def calculate_expected_cost(chance, cost):
-        return cost * chance + ALTERNATIVE_COST * (1 - chance)
-
-    costs = np.linspace(
-        MAX_COST, MIN_COST, MAX_COST // MIN_STEP * 5 + 1, endpoint=True
-    ).astype(np.int64)
+    costs = np.linspace(MAX_COST, MIN_COST, COST_STEPS + 1, endpoint=True).astype(
+        np.int64
+    )
     chances = np.linspace(
-        MAX_PERCENTAGE,
-        MIN_PERCENTAGE,
-        int((MAX_PERCENTAGE - MIN_PERCENTAGE) * 100 + 1),
+        MAX_CHANCE,
+        MIN_CHANCE,
+        CHANCE_STEPS + 1,
         endpoint=True,
     )
 
     # Calculating the expected average cost for each combination of chance and cost
-    expected_costs = np.zeros((len(chances), len(costs)))
-    for i in range(len(chances)):
-        for j in range(len(costs)):
-            expected_costs[i][j] = calculate_expected_cost(chances[i], costs[j])
+    expected_costs = calculate_expected_costs(
+        chances,
+        costs,
+        ALTERNATIVE_COST,
+    )
 
     # Create a custom color map from blue to red
     cmap = sns.diverging_palette(
-        240, 10, s=500, l=20, as_cmap=True, center="dark", sep=20
+        240, 10, s=500, l=20, as_cmap=True, center="dark", sep=5
     )
 
     # Plotting the background heatmap
     sns.heatmap(
         expected_costs,
         cmap=cmap,
-        xticklabels=[f"{x:,}".replace(",", " ") for x in costs],
-        yticklabels=[f"{x:.0%}" for x in chances],
     )
 
     # Get the current Axes object to access the colorbar
@@ -326,9 +354,9 @@ def plot_cost_benefit(
         "Expected Total Cost of Recruitment (SEK)", rotation=270, labelpad=-55
     )
 
-    cbar.set_ticklabels(
-        [f"{x:,}".replace(",", " ").split(".")[0] for x in cbar.get_ticks()]
-    )
+    cbar.ax.ticklabel_format(style="plain", useOffset=False)
+    cbar_ticks = cbar.get_ticks()
+    cbar.set_ticklabels([f"{x:,}".replace(",", " ").split(".")[0] for x in cbar_ticks])
 
     ### Plot the points ###
     # Scale stats_df to the same scale as the heatmap
@@ -337,9 +365,7 @@ def plot_cost_benefit(
     scaled_df["cost"] *= costs.size
     scaled_df["cost"] = costs.size - scaled_df["cost"]
 
-    scaled_df["chance"] = (scaled_df["chance"] - MIN_PERCENTAGE) / (
-        MAX_PERCENTAGE - MIN_PERCENTAGE
-    )
+    scaled_df["chance"] = (scaled_df["chance"] - MIN_CHANCE) / (MAX_CHANCE - MIN_CHANCE)
     scaled_df["chance"] *= chances.size
     scaled_df["chance"] = chances.size - scaled_df["chance"]
 
@@ -353,16 +379,25 @@ def plot_cost_benefit(
         s=250,
     )
 
-    ### Finishing touches ###
-    # Show only x-labels divisible by MIN_STEP
-    for label in plt.gca().xaxis.get_ticklabels():
-        if int(label.get_text().replace(" ", "")) % MIN_STEP != 0:
-            label.set_visible(False)
+    ### Finishing touches ###### Finishing touches ###
+    # Add x-labels divisible by COST_TICK_STEPS from costs
+    cost_tick_indices = np.linspace(
+        0, COST_STEPS, COST_TICK_STEPS, endpoint=True, dtype=np.int64
+    )
+    plt.xticks(
+        cost_tick_indices,
+        [f"{cost:,}".replace(",", " ") for cost in costs[cost_tick_indices]],
+    )
 
-    # Show only every 10th y-axis label
-    for label in plt.gca().yaxis.get_ticklabels():
-        if not label.get_text().endswith("0%"):
-            label.set_visible(False)
+    # Add y-labels from 30% to 100% in 10% increments
+    chance_tick_indices = np.linspace(
+        0, CHANCE_STEPS, CHANCE_TICK_STEPS, endpoint=True, dtype=np.int64
+    )
+    print(chance_tick_indices)
+    plt.yticks(
+        chance_tick_indices,
+        [f"{chance:.0%}" for chance in chances[chance_tick_indices]],
+    )
 
     # Adding labels and title
     plt.xlabel("Cost of Recruitment (SEK)")
