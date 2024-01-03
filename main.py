@@ -229,7 +229,7 @@ def plot_cost_benefit(
         raise RuntimeError("Cost span is not divisible by cost step")
     # Number of steps for cost of recruitment
     COST_STEPS = (MAX_COST - MIN_COST) // cost_step
-    cost_tick_step = 10_000  # Step size for cost of recruitment
+    cost_tick_step = 20_000  # Step size for cost of recruitment
     # Number of steps for cost of recruitment
     COST_TICK_STEPS = (MAX_COST - MIN_COST) // cost_tick_step + 1
 
@@ -331,10 +331,8 @@ def plot_cost_benefit(
         ALTERNATIVE_COST,
     )
 
-    # Create a custom color map from blue to red
-    cmap = sns.diverging_palette(
-        240, 10, s=500, l=20, as_cmap=True, center="dark", sep=5
-    )
+    # Set a colormap which is a spectrum going from cool to warm
+    cmap = sns.color_palette("coolwarm", as_cmap=True)
 
     # Plotting the background heatmap
     sns.heatmap(
@@ -351,7 +349,7 @@ def plot_cost_benefit(
 
     # Set title for the color scale bar
     cbar.set_label(
-        "Expected Total Cost of Recruitment (SEK)", rotation=270, labelpad=-55
+        "Expected Total Cost of Recruitment (SEK)", rotation=270, labelpad=-80
     )
 
     cbar.ax.ticklabel_format(style="plain", useOffset=False)
@@ -388,6 +386,9 @@ def plot_cost_benefit(
         cost_tick_indices,
         [f"{cost:,}".replace(",", " ") for cost in costs[cost_tick_indices]],
     )
+
+    # Rotate the x-labels by 45 degrees
+    plt.xticks(rotation=30)
 
     # Add y-labels from 30% to 100% in 10% increments
     chance_tick_indices = np.linspace(
