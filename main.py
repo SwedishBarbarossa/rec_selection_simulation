@@ -229,13 +229,13 @@ def plot_cost_benefit(
         raise RuntimeError("Cost span is not divisible by cost step")
     # Number of steps for cost of recruitment
     COST_STEPS = (MAX_COST - MIN_COST) // cost_step
-    cost_tick_step = 20_000  # Step size for cost of recruitment
+    cost_tick_step = 50_000  # Step size for cost of recruitment
     # Number of steps for cost of recruitment
     COST_TICK_STEPS = (MAX_COST - MIN_COST) // cost_tick_step + 1
 
     ALTERNATIVE_COST = 700_000  # Cost of failed recruitment
 
-    MIN_CHANCE = 0.3  # Minimum percentage of successful recruitment
+    MIN_CHANCE = 0  # Minimum percentage of successful recruitment
     MAX_CHANCE = 1.0  # Maximum percentage of successful recruitment
     chance_steps_per_p = 10  # Number of steps per percentage point
     chance_span = (MAX_CHANCE - MIN_CHANCE) * 100
@@ -332,7 +332,10 @@ def plot_cost_benefit(
     )
 
     # Set a colormap which is a spectrum going from cool to warm
-    cmap = sns.color_palette("coolwarm", as_cmap=True)
+    cmap = sns.color_palette("Spectral", as_cmap=True)
+
+    # Invert the colormap so that the lowest values are cool and the highest are warm
+    cmap = cmap.reversed()
 
     # Plotting the background heatmap
     sns.heatmap(
@@ -340,7 +343,14 @@ def plot_cost_benefit(
         cmap=cmap,
     )
 
-    # Get the current Axes object to access the colorbar
+    # Adding contour lines representing altitude-like levels
+    plt.contour(
+        expected_costs,
+        levels=6,  # Adjust the number of contour levels as needed
+        colors="black",  # Set the color for the contour lines
+        linestyles="solid",  # Adjust line style if needed (dashed, dotted, etc.)
+    )
+
     ax = plt.gca()
     # Access the colorbar object
     cbar = ax.collections[0].colorbar
@@ -352,12 +362,14 @@ def plot_cost_benefit(
         "Expected Total Cost of Recruitment (SEK)", rotation=270, labelpad=-80
     )
 
+    # Invert the color scale bar
+    cbar.ax.invert_yaxis()
+
     cbar.ax.ticklabel_format(style="plain", useOffset=False)
     cbar_ticks = cbar.get_ticks()
     cbar.set_ticklabels([f"{x:,}".replace(",", " ").split(".")[0] for x in cbar_ticks])
 
-    ### Plot the points ###
-    # Scale stats_df to the same scale as the heatmap
+    ### Scale stats_df to the same scale as the heatmap ###
     scaled_df = stats_df.copy()
     scaled_df["cost"] = (scaled_df["cost"] - MIN_COST) / (MAX_COST - MIN_COST)
     scaled_df["cost"] *= costs.size
@@ -367,7 +379,7 @@ def plot_cost_benefit(
     scaled_df["chance"] *= chances.size
     scaled_df["chance"] = chances.size - scaled_df["chance"]
 
-    # Marking the points
+    ### Plot the points ###
     sns.scatterplot(
         data=scaled_df,
         x="cost",
@@ -377,8 +389,8 @@ def plot_cost_benefit(
         s=250,
     )
 
-    ### Finishing touches ###### Finishing touches ###
-    # Add x-labels divisible by COST_TICK_STEPS from costs
+    ### Finishing touches ###
+    # Add x-labels
     cost_tick_indices = np.linspace(
         0, COST_STEPS, COST_TICK_STEPS, endpoint=True, dtype=np.int64
     )
@@ -390,11 +402,10 @@ def plot_cost_benefit(
     # Rotate the x-labels by 45 degrees
     plt.xticks(rotation=30)
 
-    # Add y-labels from 30% to 100% in 10% increments
+    # Add y-labels
     chance_tick_indices = np.linspace(
         0, CHANCE_STEPS, CHANCE_TICK_STEPS, endpoint=True, dtype=np.int64
     )
-    print(chance_tick_indices)
     plt.yticks(
         chance_tick_indices,
         [f"{chance:.0%}" for chance in chances[chance_tick_indices]],
@@ -403,7 +414,7 @@ def plot_cost_benefit(
     # Adding labels and title
     plt.xlabel("Cost of Recruitment (SEK)")
     plt.ylabel("Odds of Successful Recruitment")
-    plt.title("Expected Average Cost of Recruitment based on Cost")
+    plt.title("Expected Average Cost of Recruitment Based on Failure Cost")
 
     # Set size
     plt.gcf().set_size_inches(12, 8)
